@@ -328,9 +328,8 @@ input:disabled,textarea:disabled{opacity:.4;cursor:not-allowed}
 /* ════════════════════════════════════════
    PERMISSION MODAL
 ════════════════════════════════════════ */
-#permMod,#safeMod{display:none;position:fixed;inset:0;z-index:5000;background:var(--ov);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center}
-#permMod.show,#safeMod.show{display:flex}
-#safeMod .pmd{max-width:320px}
+#permMod{display:none;position:fixed;inset:0;z-index:5000;background:var(--ov);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;text-align:center}
+#permMod.show{display:flex}
 .pmic{font-size:52px}
 .pmt{font-family:var(--f);font-weight:800;font-size:19px;color:var(--textb)}
 .pmd{font-family:var(--m);font-size:12px;color:var(--textd);line-height:1.75;max-width:290px}
@@ -357,8 +356,6 @@ input:disabled,textarea:disabled{opacity:.4;cursor:not-allowed}
 .tpn::after{content:'';width:26px;height:7px;background:#0077cc;border-radius:3px;box-shadow:0 0 8px rgba(0,119,204,.6)}
 .tpd{width:48px;height:30px;border-radius:6px;background:#eef2fc;border:1px solid #c8d4ee;display:flex;align-items:center;justify-content:center}
 .tpd::after{content:'';width:26px;height:7px;background:#005cc5;border-radius:3px}
-#ttlOpts .topt{flex:1 1 40%;padding:10px 8px;font-family:var(--f);font-weight:700;font-size:12px;color:var(--text)}
-#ttlOpts .topt.on{color:var(--blue)}
 .shdv{height:1px;background:var(--bdr);margin:14px 20px}
 .shi{padding:4px 20px 24px;font-family:var(--m);font-size:11px;color:var(--textd);line-height:2;letter-spacing:.04em}
 .shi b{color:var(--blue);font-weight:normal}
@@ -489,7 +486,7 @@ audio{display:none}
         <div id="cpid" class="c-pid">—</div>
       </div>
       <div class="c-acts">
-        <button type="button" id="secPill" class="pill link" style="cursor:pointer;border:1px solid transparent;font-family:var(--m)"><div class="dot"></div><span id="secPillTxt">Encrypting…</span></button>
+        <div class="pill on"><div class="dot"></div><span>Secure</span></div>
         <button type="button" id="vcBtn" class="btn btn-green bi" title="Voice Call">
           <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4a1 1 0 0 1 1-1h2.5a1 1 0 0 1 .97.757l.7 2.8a1 1 0 0 1-.287.99l-1.2 1.1a10 10 0 0 0 4.37 4.37l1.1-1.2a1 1 0 0 1 .99-.287l2.8.7A1 1 0 0 1 17 13.5V16a1 1 0 0 1-1 1C7.163 17 3 12.837 3 8V4z"/></svg>
         </button>
@@ -674,19 +671,6 @@ audio{display:none}
   </div>
 </div>
 
-<!-- ═══════════ SAFETY NUMBER MODAL ═══════════ -->
-<div id="safeMod">
-  <div class="pmic">🔑</div>
-  <div class="pmt">Verify This Chat</div>
-  <div class="pmd">Read this code aloud on a call, or compare it in person. If it matches on both devices, your connection has no man-in-the-middle — read our <a href="#" id="safeWhy" style="color:var(--blue)">why this matters</a>.</div>
-  <div id="safeNum" style="font-family:var(--m);font-size:15px;letter-spacing:.06em;color:var(--blue);background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:14px;margin:14px 0;text-align:center;word-break:break-all;line-height:1.7">—</div>
-  <div id="safeState" style="font-family:var(--m);font-size:11px;color:var(--textd);text-align:center;margin-bottom:6px"></div>
-  <div class="pmacts">
-    <button type="button" class="btn btn-ghost" id="safeClose">Close</button>
-    <button type="button" class="btn btn-green" id="safeVerify">✓ Matches — Mark Verified</button>
-  </div>
-</div>
-
 <!-- ═══════════ SETTINGS ═══════════ -->
 <div id="sbd"></div>
 <div id="ssh">
@@ -700,21 +684,10 @@ audio{display:none}
     </div>
   </div>
   <div class="shdv"></div>
-  <div class="shs">
-    <div class="shsl">Disappearing Messages</div>
-    <div class="topts" id="ttlOpts" style="flex-wrap:wrap">
-      <div class="topt ttlopt" data-ttl="0">Off</div>
-      <div class="topt ttlopt" data-ttl="60">1 min</div>
-      <div class="topt ttlopt" data-ttl="3600">1 hour</div>
-      <div class="topt ttlopt" data-ttl="86400">1 day</div>
-    </div>
-  </div>
-  <div class="shdv"></div>
   <div class="shi">
-    <div><b>KRYPT v2.1</b> — Complete Secure Messenger</div>
+    <div><b>KRYPT v2.0</b> — Complete Secure Messenger</div>
     <div>Text · Photos · Videos · Files · Voice Memos</div>
     <div>Voice Calls · Video Calls · NUKE</div>
-    <div>End-to-end encrypted (AES-256-GCM), fresh keys every session — tap "Encrypted" in chat to verify the safety number.</div>
     <div>All data in RAM only — never stored anywhere.</div>
   </div>
 </div>
@@ -757,9 +730,6 @@ const permNo=G('permNo'), permYes=G('permYes');
 const attbar=G('attbar'), attThumb=G('att-thumb'), attIcon=G('att-icon');
 const attNm=G('att-nm'), attSz=G('att-sz'), attX=G('attX'), sendProg=G('sendProg');
 const micBtn=G('micBtn');
-const secPill=G('secPill'), secPillTxt=G('secPillTxt');
-const safeMod=G('safeMod'), safeNum=G('safeNum'), safeState=G('safeState');
-const safeClose=G('safeClose'), safeVerify=G('safeVerify');
 
 // File inputs
 const fiImg=G('fi-img'), fiVid=G('fi-vid'), fiFile=G('fi-file'), fiCam=G('fi-cam');
@@ -776,107 +746,6 @@ let permCallback=null;
 // Chunked transfer state
 const CHUNK=16000; // 16KB string chunks
 let recvBuffers={}, recvMeta={};
-
-// ── Disappearing messages ────────────────────────────────
-let disappearTTL=0; // seconds; 0 = off
-try{disappearTTL=parseInt(localStorage.getItem('krypt-ttl')||'0',10)||0;}catch{}
-function setTTL(sec){
-  disappearTTL=sec;
-  try{localStorage.setItem('krypt-ttl',String(sec));}catch{}
-  document.querySelectorAll('.ttlopt').forEach(o=>o.classList.toggle('on',parseInt(o.dataset.ttl,10)===sec));
-}
-document.querySelectorAll('.ttlopt').forEach(o=>o.addEventListener('click',()=>setTTL(parseInt(o.dataset.ttl,10))));
-setTTL(disappearTTL);
-// Schedules a chat bubble's row for removal after `ttl` seconds (applies on
-// BOTH sender and receiver, since a P2P app has no server copy to also
-// delete — once every local device has removed it, it's gone for good).
-function scheduleDisappear(rowEl,ttl){
-  if(!ttl||!rowEl)return;
-  setTimeout(()=>{
-    rowEl.style.transition='opacity .6s';rowEl.style.opacity='0';
-    setTimeout(()=>rowEl.remove(),650);
-  },ttl*1000);
-}
-
-// ── App-layer End-to-End Encryption (ECDH P-256 + AES-256-GCM) ──
-// A fresh key pair is generated for every new connection (ephemeral),
-// giving forward secrecy: even if a key were ever compromised, past
-// sessions stay unreadable. The shared key never leaves the two devices
-// and is never sent anywhere — only the public keys are exchanged.
-let myKeyPair=null, sharedKey=null, secReady=false, secReadyResolvers=[];
-let safetyNumber='', isVerified=false;
-
-async function newEphemeralKeyPair(){
-  myKeyPair=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveKey']);
-}
-// Safety number: a hash of BOTH public keys, order-independent, so both
-// sides compute the identical value. Comparing this out-of-band (voice,
-// in person, another app) is the only way to rule out a man-in-the-middle
-// at the signaling server — encryption alone can't prove who you're
-// actually talking to.
-async function computeSafetyNumber(myPubKey,peerPubKey){
-  const a=new Uint8Array(await crypto.subtle.exportKey('raw',myPubKey));
-  const b=new Uint8Array(await crypto.subtle.exportKey('raw',peerPubKey));
-  let first=a,second=b;
-  for(let i=0;i<a.length;i++){if(a[i]!==b[i]){if(a[i]>b[i]){first=b;second=a;}break;}}
-  const combined=new Uint8Array(first.length+second.length);
-  combined.set(first,0);combined.set(second,first.length);
-  const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',combined));
-  let out='';
-  for(let i=0;i<20;i++){out+=String(digest[i]%10);if(i%5===4&&i<19)out+='  ';}
-  return out;
-}
-async function deriveShared(peerJwk){
-  const peerKey=await crypto.subtle.importKey('jwk',peerJwk,{name:'ECDH',namedCurve:'P-256'},true,[]);
-  sharedKey=await crypto.subtle.deriveKey(
-    {name:'ECDH',public:peerKey},myKeyPair.privateKey,
-    {name:'AES-GCM',length:256},false,['encrypt','decrypt']
-  );
-  safetyNumber=await computeSafetyNumber(myKeyPair.publicKey,peerKey);
-  isVerified=false;
-  secReady=true;
-  secReadyResolvers.forEach(fn=>fn());secReadyResolvers=[];
-}
-function resetSecurity(){secReady=false;sharedKey=null;myKeyPair=null;safetyNumber='';isVerified=false;secReadyResolvers=[];}
-
-// ── Security pill + safety number UI ─────────────────────
-function updateSecPill(){
-  if(!secReady){secPill.className='pill link';secPillTxt.textContent='Encrypting…';return;}
-  secPill.className='pill on';
-  secPillTxt.textContent=isVerified?'✓ Verified':'Encrypted';
-}
-function openSafeMod(){
-  safeNum.textContent=safetyNumber||'—';
-  safeState.textContent=isVerified?'✓ You marked this chat as verified':'Not yet verified this session';
-  safeVerify.style.display=isVerified?'none':'inline-flex';
-  safeMod.classList.add('show');
-}
-secPill.addEventListener('click',openSafeMod);
-safeClose.addEventListener('click',()=>safeMod.classList.remove('show'));
-safeVerify.addEventListener('click',()=>{
-  isVerified=true;updateSecPill();safeMod.classList.remove('show');
-  addSys('🔑 You verified this chat\'s safety number');
-});
-function waitSecure(timeoutMs){
-  if(secReady)return Promise.resolve(true);
-  return new Promise(res=>{
-    const t=setTimeout(()=>res(false),timeoutMs);
-    secReadyResolvers.push(()=>{clearTimeout(t);res(true);});
-  });
-}
-function b2b64(buf){return btoa(String.fromCharCode(...new Uint8Array(buf)));}
-function b642b(b64){const s=atob(b64),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u.buffer;}
-async function encryptObj(obj){
-  const iv=crypto.getRandomValues(new Uint8Array(12));
-  const pt=new TextEncoder().encode(JSON.stringify(obj));
-  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},sharedKey,pt);
-  return {e:1,iv:b2b64(iv),d:b2b64(ct)};
-}
-async function decryptObj(pkt){
-  const iv=new Uint8Array(b642b(pkt.iv));
-  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv},sharedKey,b642b(pkt.d));
-  return JSON.parse(new TextDecoder().decode(pt));
-}
 
 // ── Splash ────────────────────────────────────────────────
 setTimeout(()=>{
@@ -930,16 +799,15 @@ function showSetup(){
 function rmEmpty(){emptyEl.style.display='none';}
 function scrollEnd(){msgs.scrollTop=msgs.scrollHeight;}
 
-function addText(text,me,ttl){
+function addText(text,me){
   rmEmpty();
   const r=document.createElement('div');r.className='mrow '+(me?'me':'them');
   const l=document.createElement('div');l.className='slbl';l.textContent=me?'You':'Peer';
   const b=document.createElement('div');b.className='bub '+(me?'me':'them');
   const tx=document.createElement('span');tx.textContent=text;
-  const t=document.createElement('span');t.className='bt';t.textContent=ts()+(ttl?' 🔥':'');
+  const t=document.createElement('span');t.className='bt';t.textContent=ts();
   b.appendChild(tx);b.appendChild(t);r.appendChild(l);r.appendChild(b);
   msgs.appendChild(r);scrollEnd();
-  scheduleDisappear(r,ttl);
 }
 
 function addSys(t){
@@ -948,7 +816,7 @@ function addSys(t){
   msgs.appendChild(e);scrollEnd();
 }
 
-function addImage(src,me,isVid,fname,ttl){
+function addImage(src,me,isVid,fname){
   rmEmpty();
   const r=document.createElement('div');r.className='mrow '+(me?'me':'them');
   const l=document.createElement('div');l.className='slbl';l.textContent=me?'You':'Peer';
@@ -969,10 +837,9 @@ function addImage(src,me,isVid,fname,ttl){
   f.appendChild(dl);f.appendChild(tsp);
   w.appendChild(f);r.appendChild(l);r.appendChild(w);
   msgs.appendChild(r);scrollEnd();
-  scheduleDisappear(r,ttl);
 }
 
-function addFile(name,size,dataUrl,me,ttl){
+function addFile(name,size,dataUrl,me){
   rmEmpty();
   const r=document.createElement('div');r.className='mrow '+(me?'me':'them');
   const l=document.createElement('div');l.className='slbl';l.textContent=me?'You':'Peer';
@@ -988,10 +855,9 @@ function addFile(name,size,dataUrl,me,ttl){
   }
   const t=document.createElement('span');t.className='bt';t.textContent=ts();b.appendChild(t);
   r.appendChild(l);r.appendChild(b);msgs.appendChild(r);scrollEnd();
-  scheduleDisappear(r,ttl);
 }
 
-function addVoice(blob,me,dur,ttl){
+function addVoice(blob,me,dur){
   rmEmpty();
   const url=URL.createObjectURL(blob);
   const r=document.createElement('div');r.className='mrow '+(me?'me':'them');
@@ -1012,7 +878,6 @@ function addVoice(blob,me,dur,ttl){
   const dd=document.createElement('div');dd.className='vdur';dd.textContent=fmtT(dur||0);
   b.appendChild(pb);b.appendChild(wv);b.appendChild(dd);
   r.appendChild(l);r.appendChild(b);msgs.appendChild(r);scrollEnd();
-  scheduleDisappear(r,ttl);
 }
 
 // ── Lightbox ──────────────────────────────────────────────
@@ -1073,7 +938,7 @@ function sendFileChunked(file,type){
       const id=Math.random().toString(36).slice(2);
       const total=Math.ceil(dataUrl.length/CHUNK);
       // Send header
-      safeSend({type:'file_start',id,name:file.name,size:file.size,mime:file.type,fileType:type,total,ttl:disappearTTL});
+      safeSend({type:'file_start',id,name:file.name,size:file.size,mime:file.type,fileType:type,total});
       // Send all chunks sequentially with small delay so DataChannel doesn't overflow
       let idx=0;
       function next(){
@@ -1096,16 +961,9 @@ function sendFileChunked(file,type){
   });
 }
 
-async function safeSend(obj){
+function safeSend(obj){
   if(!conn||!conn.open)return;
-  try{
-    if(obj.type==='pubkey'){conn.send(obj);return;} // handshake itself must go in the clear
-    if(!secReady){
-      const ok=await waitSecure(5000);
-      if(!ok){toast('Secure channel not ready — message not sent');return;}
-    }
-    conn.send(await encryptObj(obj));
-  }catch(e){console.warn('send error',e);}
+  try{conn.send(obj);}catch(e){console.warn('send error',e);}
 }
 
 // ── Send message ──────────────────────────────────────────
@@ -1118,9 +976,9 @@ async function doSend(){
     const localUrl=URL.createObjectURL(file);
     clearAtt();
     // Show sender bubble immediately from local file — no waiting
-    if(type==='image')addImage(localUrl,true,false,null,disappearTTL);
-    else if(type==='video')addImage(localUrl,true,true,null,disappearTTL);
-    else addFile(nm,sz,localUrl,true,disappearTTL);
+    if(type==='image')addImage(localUrl,true,false);
+    else if(type==='video')addImage(localUrl,true,true);
+    else addFile(nm,sz,localUrl,true);
     try{
       await sendFileChunked(file,type);
     }catch(e){addSys('✗ Send failed: '+e.message);}
@@ -1128,8 +986,8 @@ async function doSend(){
   }
   const text=msgtxt.value.trim();
   if(!text)return;
-  safeSend({type:'msg',text,ttl:disappearTTL});
-  addText(text,true,disappearTTL);
+  safeSend({type:'msg',text});
+  addText(text,true);
   msgtxt.value='';sendBtn.disabled=true;autoGrow();
 }
 
@@ -1152,9 +1010,9 @@ function handleFileEnd(p){
     if(!dataUrl.startsWith('data:')){addSys('⚠ Transfer incomplete, retry');return;}
     const blob=dataUrlToBlob(dataUrl,meta.mime);
     const url=URL.createObjectURL(blob);
-    if(meta.fileType==='image') addImage(url,false,false,meta.name,meta.ttl);
-    else if(meta.fileType==='video') addImage(url,false,true,meta.name,meta.ttl);
-    else addFile(meta.name,meta.size,url,false,meta.ttl);
+    if(meta.fileType==='image') addImage(url,false,false,meta.name);
+    else if(meta.fileType==='video') addImage(url,false,true,meta.name);
+    else addFile(meta.name,meta.size,url,false);
   }catch(err){addSys('⚠ Receive error: '+err.message);}
   delete recvBuffers[id];delete recvMeta[id];
 }
@@ -1168,37 +1026,24 @@ function dataUrlToBlob(dataUrl,mime){
 }
 
 // ── Decode & handle data ──────────────────────────────────
-async function onData(raw){
+function onData(raw){
   let p=raw;
   if(typeof raw==='string'){try{p=JSON.parse(raw);}catch{return;}}
-  if(!p)return;
-  if(p.e===1){ // encrypted packet
-    if(!sharedKey)return; // handshake not finished yet, can't read it — drop
-    try{p=await decryptObj(p);}catch(err){console.warn('decrypt failed',err);return;}
-  }
   if(!p||!p.type)return;
-  if(p.type==='pubkey'){
-    try{
-      await deriveShared(p.jwk);
-      updateSecPill();
-      addSys('🔒 End-to-end encrypted (AES-256-GCM) — tap "Encrypted" above to verify');
-    }catch(err){addSys('⚠ Secure channel failed — reconnect');}
-    return;
-  }
   switch(p.type){
-    case 'msg': addText(String(p.text||''),false,p.ttl);break;
+    case 'msg': addText(String(p.text||''),false);break;
     case 'nuke': nflash.classList.add('on');setTimeout(()=>location.reload(),360);break;
     case 'file_start': recvMeta[p.id]=p;recvBuffers[p.id]=[];addSys('Receiving '+p.name+'…');break;
     case 'file_chunk': handleChunk(p);break;
     case 'file_end': handleFileEnd(p);break;
-    case 'voice_start': recvBuffers[p.id]=[];recvMeta[p.id]={dur:p.dur,ttl:p.ttl};break;
+    case 'voice_start': recvBuffers[p.id]=[];recvMeta[p.id]={dur:p.dur};break;
     case 'voice_chunk': if(!recvBuffers[p.id])recvBuffers[p.id]=[];recvBuffers[p.id].push(p.data);break;
     case 'voice_end':{
       const id=p.id;
       try{
         const vUrl=(recvBuffers[id]||[]).join('');
         const vBlob=dataUrlToBlob(vUrl,'audio/webm;codecs=opus');
-        addVoice(vBlob,false,recvMeta[id]?.dur||0,recvMeta[id]?.ttl);
+        addVoice(vBlob,false,recvMeta[id]?.dur||0);
       }catch(e){addSys('⚠ Voice failed');}
       delete recvBuffers[id];delete recvMeta[id];
       break;
@@ -1215,16 +1060,10 @@ async function onData(raw){
 // ── PeerJS connection ─────────────────────────────────────
 function attachConn(c){
   conn=c;setPill('link','Connecting…');
-  resetSecurity();updateSecPill();
-  c.on('open',async()=>{
-    setErr('');showChat(c.peer);
-    await newEphemeralKeyPair();
-    const jwk=await crypto.subtle.exportKey('jwk',myKeyPair.publicKey);
-    conn.send({type:'pubkey',jwk});
-  });
+  c.on('open',()=>{setErr('');showChat(c.peer);});
   c.on('data',onData);
-  c.on('close',()=>{conn=null;resetSecurity();updateSecPill();showSetup();});
-  c.on('error',e=>{setErr((e&&e.message)||'Error');conn=null;resetSecurity();updateSecPill();showSetup();});
+  c.on('close',()=>{conn=null;showSetup();});
+  c.on('error',e=>{setErr((e&&e.message)||'Error');conn=null;showSetup();});
 }
 
 function initPeer(){
@@ -1364,7 +1203,7 @@ function startRec(){
       const blob=new Blob(recChunks,{type:mediaRec.mimeType||'audio/webm'});
       // Send voice as chunks
       const id=Math.random().toString(36).slice(2);
-      safeSend({type:'voice_start',id,dur,ttl:disappearTTL});
+      safeSend({type:'voice_start',id,dur});
       // Send voice as DataURL chunks
       const vfr=new FileReader();
       vfr.onload=ev=>{
@@ -1376,7 +1215,7 @@ function startRec(){
       vfr.readAsDataURL(blob);
       await new Promise(r=>setTimeout(r,200)); // wait for FileReader
       safeSend({type:'voice_end',id});
-      addVoice(blob,true,dur,disappearTTL);
+      addVoice(blob,true,dur);
     };
     mediaRec.start(100);isRec=true;micBtn.classList.add('rec');
     toast('🔴 Recording — release to send',60000);
@@ -1442,4 +1281,3 @@ initPeer();
 </script>
 </body>
 </html>
-
