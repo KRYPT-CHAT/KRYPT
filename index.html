@@ -4,6 +4,9 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover"/>
 <meta name="theme-color" content="#ffffff"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com 'sha256-LK7pitHEkkEP+xuqzZYlObagzOFFHpALOTejuSkA1n4='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; worker-src 'self' blob:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'"/>
+<meta http-equiv="Referrer-Policy" content="no-referrer"/>
+<meta http-equiv="Permissions-Policy" content="camera=(self), microphone=(self), display-capture=(self), geolocation=()"/>
 <link rel="manifest" href="/manifest.json"/>
 <title>KRYPT</title>
 <style>
@@ -365,37 +368,70 @@ body.flash::after{content:'';position:fixed;inset:0;background:rgba(225,29,72,.4
 
 <div id="toast"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.5/peerjs.min.js" integrity="sha512-XEKeWX+mI3Ov+tg2evDlVQFzVOIp4T8J3cNcCEPaEUGpxJV3eZaN8rHuvnFPvQpGJBHPmrozJDMpm2xcDvtmyQ==" crossorigin="anonymous"></script>
 <script>
 "use strict";
 const $=i=>document.getElementById(i),sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const CH=16000,MAX=100*1048576;
 let tt;function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on'),2800)}
 
-/* ================= VAULT: AES-256-GCM, key locked by PIN (PBKDF2-SHA256, 600k rounds) ================= */
+/* ================= VAULT + LOCAL ENCRYPTION =================
+   Local records and files are AES-256-GCM encrypted. New records bind
+   ciphertext to their IndexedDB store/key with authenticated additional data.
+   Legacy records are transparently read and rewritten in the new format.
+*/
 const te=new TextEncoder(),td=new TextDecoder(),sub=window.crypto&&crypto.subtle;
 const toB64=u=>{let s='';for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(s)};
-const fromB64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-const AES={name:'AES-GCM',length:256};
-let DK=null; // data key: lives only in memory while unlocked
-async function kek(pin,salt){const k=await sub.importKey('raw',te.encode(pin),'PBKDF2',false,['deriveKey']);return sub.deriveKey({name:'PBKDF2',salt,iterations:600000,hash:'SHA-256'},k,AES,false,['wrapKey','unwrapKey'])}
-async function wrapSave(pin){
+const fromB64=s=>{
+  if(typeof s!=='string'||s.length>200000||!/^[A-Za-z0-9+/]*={0,2}$/.test(s)||s.length%4!==0)throw new Error('Invalid base64');
+  return Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+};
+const AES={name:'AES-GCM',length:256},KDF_ROUNDS=1200000,LEGACY_KDF_ROUNDS=600000;
+let DK=null,localIdentity=null;
+async function kek(pin,salt,iterations=KDF_ROUNDS){
+  const k=await sub.importKey('raw',te.encode(pin),'PBKDF2',false,['deriveKey']);
+  return sub.deriveKey({name:'PBKDF2',salt,iterations,hash:'SHA-256'},k,AES,false,['wrapKey','unwrapKey']);
+}
+async function wrapSave(pin,key=DK){
   const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
-  const w=new Uint8Array(await sub.wrapKey('raw',DK,await kek(pin,salt),{name:'AES-GCM',iv}));
-  localStorage.setItem('k_vault',JSON.stringify({s:toB64(salt),i:toB64(iv),w:toB64(w)}));
+  const w=new Uint8Array(await sub.wrapKey('raw',key,await kek(pin,salt,KDF_ROUNDS),{name:'AES-GCM',iv}));
+  localStorage.setItem('k_vault',JSON.stringify({v:2,r:KDF_ROUNDS,s:toB64(salt),i:toB64(iv),w:toB64(w)}));
 }
-async function vaultCreate(pin){DK=await sub.generateKey(AES,true,['encrypt','decrypt']);await wrapSave(pin)}
+async function useRuntimeKey(extractableKey){
+  const raw=new Uint8Array(await sub.exportKey('raw',extractableKey));
+  try{DK=await sub.importKey('raw',raw,AES,false,['encrypt','decrypt'])}finally{raw.fill(0)}
+}
+async function vaultCreate(pin){
+  const key=await sub.generateKey(AES,true,['encrypt','decrypt']);await wrapSave(pin,key);await useRuntimeKey(key)
+}
+function vaultRounds(){try{const v=JSON.parse(localStorage.getItem('k_vault')||'null');return Number.isSafeInteger(v&&v.r)?Math.max(100000,Math.min(3000000,v.r)):LEGACY_KDF_ROUNDS}catch(e){return LEGACY_KDF_ROUNDS}}
 async function tryPin(pin){
-  const v=JSON.parse(localStorage.getItem('k_vault'));
-  try{return await sub.unwrapKey('raw',fromB64(v.w),await kek(pin,fromB64(v.s)),{name:'AES-GCM',iv:fromB64(v.i)},AES,true,['encrypt','decrypt'])}catch(e){return null}
+  try{
+    const v=JSON.parse(localStorage.getItem('k_vault')||'null');
+    if(!v||typeof v.s!=='string'||typeof v.i!=='string'||typeof v.w!=='string')return null;
+    const salt=fromB64(v.s),iv=fromB64(v.i),wrapped=fromB64(v.w);
+    if(salt.length!==16||iv.length!==12)return null;
+    return await sub.unwrapKey('raw',wrapped,await kek(pin,salt,vaultRounds()),{name:'AES-GCM',iv},AES,true,['encrypt','decrypt']);
+  }catch(e){return null}
 }
-async function enc(u8){const iv=crypto.getRandomValues(new Uint8Array(12)),c=new Uint8Array(await sub.encrypt({name:'AES-GCM',iv},DK,u8)),o=new Uint8Array(12+c.length);o.set(iv);o.set(c,12);return o}
-const dec=u8=>sub.decrypt({name:'AES-GCM',iv:u8.subarray(0,12)},DK,u8.subarray(12));
+async function enc(u8,aad){
+  if(!DK)throw new Error('Vault is locked');
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const params={name:'AES-GCM',iv,tagLength:128};if(aad)params.additionalData=aad;
+  const c=new Uint8Array(await sub.encrypt(params,DK,u8)),o=new Uint8Array(12+c.length);o.set(iv);o.set(c,12);return o;
+}
+async function dec(u8,aad){
+  if(!DK)throw new Error('Vault is locked');
+  const bytes=u8 instanceof Uint8Array?u8:new Uint8Array(u8);
+  if(bytes.length<28)throw new Error('Invalid encrypted record');
+  const params={name:'AES-GCM',iv:bytes.subarray(0,12),tagLength:128};if(aad)params.additionalData=aad;
+  return sub.decrypt(params,DK,bytes.subarray(12));
+}
 
 let _db;const db=()=>_db||(_db=new Promise((ok,no)=>{const r=indexedDB.open('krypt',2);r.onupgradeneeded=()=>{const d=r.result;['b','kv'].forEach(n=>{if(!d.objectStoreNames.contains(n))d.createObjectStore(n)})};r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)}));
 const idb=async(st,mode,fn)=>{const d=await db();return new Promise((ok,no)=>{const t=d.transaction(st,mode),r=fn(t.objectStore(st));t.oncomplete=()=>ok(r&&r.result);t.onerror=t.onabort=()=>no(t.error)})};
 
-// all app data is kept decrypted in memory while unlocked and saved encrypted
+// All app data is decrypted only in memory while unlocked; IndexedDB holds authenticated ciphertext.
 const mem={},wq={},ver={};
 const LS={
   get(k,d){return k in mem?mem[k]:d},
@@ -405,8 +441,8 @@ const LS={
 async function persist(k){
   if(wq[k])return;wq[k]=1;
   try{for(;;){
-    const my=ver[k];
-    if(k in mem){const u=await enc(te.encode(JSON.stringify(mem[k])));await idb('kv','readwrite',s=>s.put(u,k))}
+    const my=ver[k],aad=te.encode('KRYPT|kv|'+k);
+    if(k in mem){const u=await enc(te.encode(JSON.stringify(mem[k])),aad);await idb('kv','readwrite',s=>s.put({v:2,d:u},k))}
     else await idb('kv','readwrite',s=>s.delete(k));
     if(ver[k]===my)break;
   }}catch(e){toast('Could not save — phone storage may be full')}
@@ -415,24 +451,39 @@ async function persist(k){
 async function loadAll(){
   try{
     const keys=await idb('kv','readonly',s=>s.getAllKeys()),vals=await idb('kv','readonly',s=>s.getAll());
-    for(let i=0;i<keys.length;i++){try{mem[keys[i]]=JSON.parse(td.decode(await dec(vals[i])))}catch(e){}}
-  }catch(e){}
-  for(const k of Object.keys(localStorage)){ // upgrade data from older, unencrypted versions
-    if(!/^k_(me|c|r|m_.+)$/.test(k))continue;
+    for(let i=0;i<keys.length;i++){
+      try{
+        const v=vals[i],plain=v&&v.v===2?await dec(v.d,te.encode('KRYPT|kv|'+keys[i])):await dec(v);
+        mem[keys[i]]=JSON.parse(td.decode(plain));
+      }catch(e){/* A corrupt record is ignored; authenticated records are never partially trusted. */}
+    }
+  }catch(e){throw new Error('Could not open encrypted local storage')}
+  for(const k of Object.keys(localStorage)){
+    if(!/^k_(me|c|r|set|calls|m_.+)$/.test(k))continue;
     if(!(k in mem)){try{await LS.set(k,JSON.parse(localStorage.getItem(k)))}catch(e){continue}}
     localStorage.removeItem(k);
   }
 }
-async function bPut(k,blob){const d=await enc(new Uint8Array(await blob.arrayBuffer()));await idb('b','readwrite',s=>s.put({t:blob.type,d},k))}
-async function bGet(k){const o=await idb('b','readonly',s=>s.get(k));if(!o)return null;if(o instanceof Blob)return o;return new Blob([await dec(o.d)],{type:o.t})}
+async function bPut(k,blob){
+  if(!(blob instanceof Blob)||blob.size>MAX)throw new Error('Invalid file');
+  const d=await enc(new Uint8Array(await blob.arrayBuffer()),te.encode('KRYPT|b|'+k));
+  await idb('b','readwrite',s=>s.put({v:2,t:blob.type,d},k));
+}
+async function bGet(k){
+  const o=await idb('b','readonly',s=>s.get(k));if(!o)return null;
+  if(o instanceof Blob){await bPut(k,o);return o;}
+  if(o.v===2)return new Blob([await dec(o.d,te.encode('KRYPT|b|'+k))],{type:o.t||'application/octet-stream'});
+  if(o.d){const legacy=new Blob([await dec(o.d)],{type:o.t||'application/octet-stream'});await bPut(k,legacy);return legacy;}
+  return null;
+}
 const bDel=k=>idb('b','readwrite',s=>s.delete(k)).catch(()=>{});
 async function wipeAll(){
+  DK=null;localIdentity=null;
   try{if(_db)(await _db).close()}catch(e){}
   try{localStorage.clear();sessionStorage.clear()}catch(e){}
   try{const r=indexedDB.deleteDatabase('krypt');await new Promise(x=>{r.onsuccess=r.onerror=r.onblocked=x})}catch(e){}
   location.reload();
 }
-
 /* ================= PIN SCREEN ================= */
 let padBuf='',padRes=null;
 const drawDots=()=>document.querySelectorAll('#dots i').forEach((e,i)=>e.classList.toggle('f',i<padBuf.length));
@@ -451,7 +502,7 @@ function padBack(){if(padRes){padBuf=padBuf.slice(0,-1);drawDots()}}
   $('lkC').onclick=()=>{if(padRes){const r=padRes;hideLock();r(null)}};
   $('lkF').onclick=()=>{if(confirm('Erase ALL KRYPT data on this phone? This cannot be undone.')&&confirm('Really erase everything? Your chats and your code will be lost.'))wipeAll()};
 })();
-const weak=p=>/^(\d)\1+$/.test(p)||'01234567890'.includes(p)||'09876543210'.includes(p);
+const weak=p=>!/^\d{6}$/.test(p)||/^(\d)\1+$/.test(p)||/^(012345|123456|234567|345678|456789|567890|654321|765432|876543|987654|000000|111111|123123|121212|112233|abcdef)$/i.test(p);
 const fails=()=>{try{return JSON.parse(localStorage.getItem('p_f'))||{n:0,t:0}}catch(e){return{n:0,t:0}}};
 const lockWait=()=>{const f=fails();if(f.n<5)return 0;return Math.max(0,f.t+[30,60,300,900,3600][Math.min(f.n-5,4)]*1000-Date.now())};
 async function setupPin(){
@@ -471,7 +522,7 @@ async function unlockApp(){
     const p=await askPin('Enter your PIN',msg,{forgot:1});
     showLock('Checking…','',{busy:1,forgot:0});
     const k=await tryPin(p);
-    if(k){DK=k;localStorage.removeItem('p_f');return}
+    if(k){if(vaultRounds()<KDF_ROUNDS){try{await wrapSave(p,k)}catch(e){showLock('Could not secure vault','Please try again.',{busy:1});throw e}}await useRuntimeKey(k);localStorage.removeItem('p_f');return}
     const f=fails();f.n++;f.t=Date.now();localStorage.setItem('p_f',JSON.stringify(f));
     msg='Wrong PIN. Try again.';
   }
@@ -480,13 +531,170 @@ async function unlockApp(){
 /* ================= STATE + HELPERS ================= */
 let me=null,contacts=[],reqs=[],calls=[],cfg={typ:1,seen:1,comp:1,dm:0,al:60000,ab:'',av:'',blk:[]};
 let peer=null,netOk=false,cur=null,rst=false,manualAt=0,hiddenAt=0,tyUntil=0,lastTy=0,replyTo=null,pend=null;
-let conns={},connecting={},xf={},els={},rows={},outx={};
+let conns={},connecting={},xf={},els={},rows={},outx={},inboundStarts=[];
 let call=null,local=null,inCall=null,wantAns=false,ringing=null,isV=false,callWith=null,ctm=null,sec=0,rec=null,holding=false,facing='user',cinfo=null,sharing=false;
 const saveC=()=>LS.set('k_c',contacts),saveR=()=>LS.set('k_r',reqs),saveS=()=>LS.set('k_set',cfg),getC=id=>contacts.find(c=>c.id===id);
 const msgsOf=id=>LS.get('k_m_'+id,[]),saveM=(id,a)=>LS.set('k_m_'+id,a);
-const online=id=>!!(conns[id]&&conns[id].open);
-const send=(id,o)=>{const c=conns[id];if(c&&c.open){try{c.send(o);return true}catch(e){}}return false};
-const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const online=id=>!!(conns[id]&&conns[id].open&&conns[id]._secure&&conns[id]._secure.ready);
+const isObject=o=>!!o&&typeof o==='object'&&!Array.isArray(o);
+const cleanPubJwk=j=>({kty:'EC',crv:'P-256',x:j.x,y:j.y});
+const validPubJwk=j=>isObject(j)&&j.kty==='EC'&&j.crv==='P-256'&&typeof j.x==='string'&&/^[A-Za-z0-9_-]{40,50}$/.test(j.x)&&typeof j.y==='string'&&/^[A-Za-z0-9_-]{40,50}$/.test(j.y);
+const peerIdValid=id=>typeof id==='string'&&/^krypt-[A-Z0-9]{10}$/i.test(id);
+const helloPayload=h=>JSON.stringify({v:h.v,from:h.from,to:h.to,ts:h.ts,nonce:h.nonce,eph:cleanPubJwk(h.eph),identity:cleanPubJwk(h.identity)});
+const aadFor=(sid,seq,from,to)=>te.encode('KRYPT|E2EE|1|'+sid+'|'+seq+'|'+from+'>'+to);
+const confirmPayload=(sid,from,to)=>te.encode('KRYPT|E2EE|1|READY|'+sid+'|'+from+'>'+to);
+async function keyFingerprint(j){const b=te.encode(JSON.stringify(cleanPubJwk(j)));return toB64(new Uint8Array(await sub.digest('SHA-256',b)))}
+async function ensureIdentity(){
+  let saved=LS.get('k_identity',null);
+  if(!saved||!saved.priv||!validPubJwk(saved.pub)){
+    const kp=await sub.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+    saved={priv:await sub.exportKey('jwk',kp.privateKey),pub:cleanPubJwk(await sub.exportKey('jwk',kp.publicKey))};
+    await LS.set('k_identity',saved);
+  }
+  const privateKey=await sub.importKey('jwk',saved.priv,{name:'ECDSA',namedCurve:'P-256'},false,['sign']);
+  localIdentity={privateKey,publicJwk:cleanPubJwk(saved.pub)};
+}
+function secureState(c){
+  if(!c._secure)c._secure={ready:false,keysReady:false,confirmSent:false,remoteConfirm:false,remoteConfirmPending:null,confirmKey:null,closed:false,starting:null,localHello:null,localEphemeral:null,remoteHello:null,remotePending:null,remoteIdentity:null,sendKey:null,recvKey:null,sessionId:'',sendSeq:0,recvSeq:0,queue:[],sending:false,receiveChain:Promise.resolve(),notified:false,finishing:false,timer:null};
+  return c._secure;
+}
+function failSecure(c,message){
+  const st=c&&c._secure;if(st&&!st.closed){st.closed=true;clearTimeout(st.timer);(st.queue||[]).splice(0).forEach(x=>x.reject(new Error('Secure connection closed')));}
+  if(message)toast(message);
+  try{c&&c.close()}catch(e){}
+}
+async function beginSecure(c){
+  const st=secureState(c);if(st.starting)return st.starting;
+  st.timer=setTimeout(()=>{if(!st.ready)failSecure(c,'Secure connection failed. Both people must update KRYPT.')},18000);
+  st.starting=(async()=>{
+    const eph=await sub.generateKey({name:'ECDH',namedCurve:'P-256'},true,['deriveBits']);
+    st.localEphemeral=eph.privateKey;
+    const hello={type:'kx1',v:1,from:me.id,to:c.peer,ts:Date.now(),nonce:toB64(crypto.getRandomValues(new Uint8Array(16))),eph:cleanPubJwk(await sub.exportKey('jwk',eph.publicKey)),identity:localIdentity.publicJwk};
+    hello.sig=toB64(new Uint8Array(await sub.sign({name:'ECDSA',hash:'SHA-256'},localIdentity.privateKey,te.encode(helloPayload(hello)))));
+    st.localHello=hello;
+    if(!c.open||st.closed)throw new Error('Connection closed');
+    c.send(hello);
+    if(st.remotePending){const pending=st.remotePending;st.remotePending=null;await verifySecureHello(c,pending)}
+  })().catch(e=>failSecure(c,'Could not establish a secure peer identity. Update both KRYPT apps.'));
+  return st.starting;
+}
+async function receiveSecureHello(c,p){
+  const st=secureState(c);
+  if(!st.localHello){
+    if(st.remotePending&&helloPayload(st.remotePending)!==helloPayload(p))return failSecure(c,'Invalid peer security handshake.');
+    st.remotePending=p;return;
+  }
+  await verifySecureHello(c,p);
+}
+async function verifySecureHello(c,p){
+  const st=secureState(c);
+  if(st.closed||st.ready)return;
+  if(!isObject(p)||p.type!=='kx1'||p.v!==1||p.from!==c.peer||p.to!==me.id||!peerIdValid(p.from)||!Number.isSafeInteger(p.ts)||Math.abs(Date.now()-p.ts)>86400000||!validPubJwk(p.identity)||!validPubJwk(p.eph)||typeof p.nonce!=='string'||typeof p.sig!=='string')throw new Error('Malformed peer identity');
+  if(st.remoteHello){if(helloPayload(st.remoteHello)!==helloPayload(p)||st.remoteHello.sig!==p.sig)throw new Error('Conflicting peer hello');return}
+  const nonce=fromB64(p.nonce),sig=fromB64(p.sig);if(nonce.length!==16||sig.length!==64)throw new Error('Invalid peer proof');
+  const verifyKey=await sub.importKey('jwk',cleanPubJwk(p.identity),{name:'ECDSA',namedCurve:'P-256'},false,['verify']);
+  const valid=await sub.verify({name:'ECDSA',hash:'SHA-256'},verifyKey,sig,te.encode(helloPayload(p)));
+  if(!valid)throw new Error('Peer signature invalid');
+  const identity=cleanPubJwk(p.identity),fp=await keyFingerprint(identity),contact=getC(c.peer);
+  if(contact&&contact.ik){
+    if(!validPubJwk(contact.ik)||await keyFingerprint(contact.ik)!==fp)throw new Error('Peer identity changed');
+  }else if(contact){contact.ik=identity;saveC();}
+  st.remoteIdentity=identity;st.remoteHello=p;c._remoteIdentity=identity;
+  await finishSecure(c);
+}
+async function finishSecure(c){
+  const st=secureState(c);if(st.keysReady||st.finishing||!st.localHello||!st.remoteHello||!st.localEphemeral||!st.remoteIdentity)return;
+  st.finishing=true;
+  try{
+    const remoteEph=await sub.importKey('jwk',cleanPubJwk(st.remoteHello.eph),{name:'ECDH',namedCurve:'P-256'},false,[]);
+    const shared=await sub.deriveBits({name:'ECDH',public:remoteEph},st.localEphemeral,256);
+    const ordered=[st.localHello,st.remoteHello].sort((a,b)=>a.from.localeCompare(b.from));
+    const transcript=te.encode(ordered.map(h=>helloPayload(h)+'|'+h.sig).join('\n'));
+    const salt=new Uint8Array(await sub.digest('SHA-256',transcript));
+    const hk=await sub.importKey('raw',shared,'HKDF',false,['deriveKey']);
+    new Uint8Array(shared).fill(0);
+    const deriveAes=direction=>sub.deriveKey({name:'HKDF',hash:'SHA-256',salt,info:te.encode('KRYPT|E2EE|1|'+direction)},hk,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+    st.sendKey=await deriveAes(me.id+'>'+c.peer);st.recvKey=await deriveAes(c.peer+'>'+me.id);
+    st.confirmKey=await sub.deriveKey({name:'HKDF',hash:'SHA-256',salt,info:te.encode('KRYPT|E2EE|1|confirm')},hk,{name:'HMAC',hash:'SHA-256',length:256},false,['sign','verify']);
+    st.sessionId=toB64(salt.subarray(0,16));st.keysReady=true;st.finishing=false;
+    const proof=new Uint8Array(await sub.sign('HMAC',st.confirmKey,confirmPayload(st.sessionId,me.id,c.peer)));
+    if(!c.open||st.closed)throw new Error('Connection closed during key confirmation');
+    c.send({type:'kx2',v:1,from:me.id,to:c.peer,s:st.sessionId,p:toB64(proof)});
+    st.confirmSent=true;
+    if(st.remoteConfirmPending){const pending=st.remoteConfirmPending;st.remoteConfirmPending=null;await receiveSecureConfirm(c,pending)}
+    markSecureReady(c);
+  }catch(e){st.finishing=false;throw e}
+}
+async function receiveSecureConfirm(c,p){
+  const st=secureState(c);
+  if(!isObject(p)||p.type!=='kx2'||p.v!==1||p.from!==c.peer||p.to!==me.id||typeof p.s!=='string'||typeof p.p!=='string')throw new Error('Invalid key confirmation');
+  if(!st.keysReady){
+    if(st.remoteConfirmPending&&(st.remoteConfirmPending.s!==p.s||st.remoteConfirmPending.p!==p.p))throw new Error('Conflicting key confirmation');
+    st.remoteConfirmPending=p;return;
+  }
+  if(st.remoteConfirm){if(st.sessionId!==p.s)throw new Error('Conflicting key confirmation');return}
+  if(p.s!==st.sessionId)throw new Error('Session mismatch');
+  const proof=fromB64(p.p);if(proof.length!==32)throw new Error('Invalid key proof');
+  const valid=await sub.verify('HMAC',st.confirmKey,proof,confirmPayload(st.sessionId,c.peer,me.id));
+  if(!valid)throw new Error('Key confirmation failed');
+  st.remoteConfirm=true;markSecureReady(c);
+}
+function markSecureReady(c){
+  const st=c&&c._secure;if(!st||st.closed||st.ready||!st.keysReady||!st.confirmSent||!st.remoteConfirm)return;
+  st.ready=true;clearTimeout(st.timer);
+  if(conns[c.peer]!==c)return;
+  if(!st.notified){
+    st.notified=true;
+    const contact=getC(c.peer);
+    if(contact){if(!contact.ik){contact.ik=st.remoteIdentity;saveC()}send(c.peer,hiMsg());if(contact.st==='ok')send(c.peer,{type:'acc'});afterOpen(c.peer)}
+    else presence();
+  }
+  flushSecureQueue(c);
+}
+function enqueueSecure(c,o){
+  const st=c&&c._secure;
+  if(!c||!c.open||!st||st.closed||!isObject(o))return Promise.reject(new Error('Secure peer is unavailable'));
+  if(st.queue.length>=256)return Promise.reject(new Error('Secure send queue is full'));
+  return new Promise((resolve,reject)=>{st.queue.push({o,resolve,reject});flushSecureQueue(c)});
+}
+async function flushSecureQueue(c){
+  const st=c&&c._secure;if(!st||!st.ready||st.sending||st.closed)return;
+  st.sending=true;
+  try{
+    while(st.ready&&!st.closed&&st.queue.length&&c.open){
+      const item=st.queue.shift();
+      try{
+        while(c.open&&c.dataChannel&&c.dataChannel.bufferedAmount>1000000)await sleep(20);
+        if(!c.open||st.closed)throw new Error('Connection closed');
+        const plain=te.encode(JSON.stringify(item.o));if(plain.byteLength>65536)throw new Error('Message too large');
+        const seq=st.sendSeq+1,iv=crypto.getRandomValues(new Uint8Array(12));
+        const aad=aadFor(st.sessionId,seq,me.id,c.peer);
+        const cipher=new Uint8Array(await sub.encrypt({name:'AES-GCM',iv,additionalData:aad,tagLength:128},st.sendKey,plain));
+        c.send({type:'kxmsg',v:1,s:st.sessionId,q:seq,i:toB64(iv),d:toB64(cipher)});
+        st.sendSeq=seq;item.resolve(true);
+      }catch(e){item.reject(e);throw e}
+    }
+  }catch(e){failSecure(c,'Secure connection interrupted. Reconnect and try again.')}
+  finally{st.sending=false;if(st.ready&&!st.closed&&st.queue.length)flushSecureQueue(c)}
+}
+function send(id,o){const c=conns[id];if(!c||!c.open||!c._secure||c._secure.closed)return false;enqueueSecure(c,o).catch(()=>{});return true}
+async function sendSecure(id,o){const c=conns[id];if(!c||!c.open||!c._secure||c._secure.closed)throw new Error('Secure peer is offline');return enqueueSecure(c,o)}
+async function receivePeerData(c,p){
+  if(c&&c._secure&&c._secure.closed)return;
+  if(!isObject(p))return failSecure(c,'Invalid data received from peer.');
+  if(p.type==='kx1'){try{await receiveSecureHello(c,p)}catch(e){failSecure(c,'Peer identity verification failed. Verify your friend out of band before reconnecting.')}return}
+  if(p.type==='kx2'){try{await receiveSecureConfirm(c,p)}catch(e){failSecure(c,'Secure key confirmation failed. Reconnect and try again.')}return}
+  const st=c._secure;
+  if(p.type!=='kxmsg'||!st||!st.ready||p.v!==1||p.s!==st.sessionId||!Number.isSafeInteger(p.q)||p.q!==st.recvSeq+1||typeof p.i!=='string'||typeof p.d!=='string'||p.d.length>100000)return failSecure(c,'Rejected an invalid or replayed message.');
+  try{
+    const iv=fromB64(p.i),cipher=fromB64(p.d);if(iv.length!==12||cipher.length<16||cipher.length>75000)throw new Error('Invalid encrypted frame');
+    const aad=aadFor(st.sessionId,p.q,c.peer,me.id);
+    const clear=await sub.decrypt({name:'AES-GCM',iv,additionalData:aad,tagLength:128},st.recvKey,cipher);
+    const obj=JSON.parse(td.decode(clear));if(!isObject(obj)||typeof obj.type!=='string')throw new Error('Invalid protocol message');
+    st.recvSeq=p.q;onData(c.peer,obj);
+  }catch(e){failSecure(c,'Message authentication failed. Connection closed.')}
+}
+const uid=()=>Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('');
 const isBlk=id=>cfg.blk.some(b=>b.id===id);
 const fmtS=b=>b<1024?b+' B':b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB';
 const fmtT=s=>String(s/60|0).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
@@ -494,7 +702,7 @@ const hm=d=>d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 const tmf=ts=>{const d=new Date(ts);return d.toDateString()===new Date().toDateString()?hm(d):d.toLocaleDateString([],{day:'numeric',month:'short'})+' '+hm(d)};
 const short=ts=>{const d=new Date(ts);return d.toDateString()===new Date().toDateString()?hm(d):d.toLocaleDateString([],{day:'numeric',month:'short'})};
 const col=id=>{let h=0;for(const ch of id)h=(h*31+ch.charCodeAt(0))>>>0;return 'hsl('+h%360+' 55% 48%)'};
-function newId(){const a='ABCDEFGHJKMNPQRSTUVWXYZ23456789',b=crypto.getRandomValues(new Uint8Array(10));return 'krypt-'+[...b].map(x=>a[x%a.length]).join('')}
+function newId(){const a='ABCDEFGHJKMNPQRSTUVWXYZ23456789';let out='';while(out.length<10){const b=crypto.getRandomValues(new Uint8Array(20));for(const x of b){if(x>=248)continue;out+=a[x%a.length];if(out.length===10)break}}return 'krypt-'+out}
 function normCode(s){const m=String(s).match(/krypt-([A-Za-z0-9]{10})/i);return m?'krypt-'+m[1].toUpperCase():null}
 async function copy(t){try{await navigator.clipboard.writeText(t)}catch(e){const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();try{document.execCommand('copy')}catch(e2){}a.remove()}toast('Copied ✓')}
 function setAvt(el,c){
@@ -502,11 +710,11 @@ function setAvt(el,c){
   if(c.av){el.style.backgroundImage='url('+c.av+')';el.style.backgroundSize='cover';el.style.backgroundPosition='center';t.textContent=''}
   else t.textContent=(c.name[0]||'?').toUpperCase();
 }
-const validAv=s=>typeof s==='string'&&s.startsWith('data:image/jpeg;base64,')&&s.length<40000?s:'';
+const validAv=s=>typeof s==='string'&&s.length<40000&&/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(s)?s:'';
 const hiMsg=()=>({type:'hi',name:me.name,ab:cfg.ab||'',av:cfg.av||''});
 const sendHiAll=()=>contacts.forEach(c=>send(c.id,hiMsg()));
 const pvOf=m=>m.t==='t'?m.text.slice(0,60):m.file.voice?'🎤 Voice message':'📎 '+m.file.name;
-const loadImg=f=>new Promise((ok,no)=>{const u=URL.createObjectURL(f),i=new Image();i.onload=()=>{URL.revokeObjectURL(u);ok(i)};i.onerror=no;i.src=u});
+const loadImg=f=>new Promise((ok,no)=>{const u=URL.createObjectURL(f),i=new Image();i.onload=()=>{URL.revokeObjectURL(u);ok(i)};i.onerror=()=>{URL.revokeObjectURL(u);no(new Error('Invalid image'))};i.src=u});
 async function shrink(f,max,q,sq){
   const i=await loadImg(f);let w=i.naturalWidth,h=i.naturalHeight,sx=0,sy=0,sw=w,sh=h;
   if(sq){const m=Math.min(w,h);sx=(w-m)/2;sy=(h-m)/2;sw=sh=w=h=m}
@@ -587,7 +795,7 @@ function addSys(t){const e=document.createElement('div');e.className='sys';e.tex
 function addXfer(me,f,ts,mo,onCancel){
   const b=document.createElement('div');b.className='b x';
   b.innerHTML='<div class="xh"><span class="xi"></span><div><div class="xn"></div><div class="xs"></div></div></div><div class="pg"><i></i></div><div class="xp"></div><div class="xa"></div>';
-  const q=s=>b.querySelector(s),img=(f.mime||'').startsWith('image/');
+  const q=s=>b.querySelector(s),img=/^image\/(png|jpeg|gif|webp|avif)$/i.test(f.mime||'');
   q('.xi').textContent=f.voice?'🎤':img?'🖼️':'📄';
   q('.xn').textContent=f.voice?'Voice message':f.name;q('.xs').textContent=fmtS(f.size);
   const bar=q('.pg i'),p=q('.xp'),lbl=me?'Sending ':'Receiving ';
@@ -704,7 +912,7 @@ function setDm(id,s,mine){
 
 /* ================= SENDING ================= */
 const sendM=(id,m)=>{
-  const c=getC(id);if(!c||c.st!=='ok')return;
+  const c=getC(id);if(!c||c.st!=='ok'||!online(id))return;
   const o={type:'m',id:m.id,text:m.text,ts:m.ts};if(m.rp)o.rp={id:m.rp.id,text:m.rp.text,me:!m.rp.me};
   send(id,o);
 };
@@ -736,7 +944,7 @@ $('send').onclick=doSend;
 $('clip').onclick=()=>{if(!online(cur))return toast('Files can only be sent while your friend is online');$('fi').click()};
 $('fi').onchange=e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
-  if(f.size>MAX)return toast('File is too big (max 100 MB)');
+  if(!(f instanceof File)||f.size>MAX)return toast('File is too big (max 100 MB)');
   pend=f;$('chipN').textContent=f.name;$('chipS').textContent=fmtS(f.size);$('chip').classList.remove('hide');upd();
 };
 $('chipX').onclick=clrPend;
@@ -753,26 +961,29 @@ $('chipX').onclick=clrPend;
 /* ----- file transfer: binary chunks, progress, cancel, retry ----- */
 async function sendFile(file,voice){
   const cid=cur;if(!online(cid))return toast('Your friend is offline. Files can only be sent when you are both online.');
+  if(!(file instanceof Blob)||file.size>MAX)return toast('File is too big (max 100 MB)');
   const id=uid(),n=Math.max(1,Math.ceil(file.size/CH));
-  const meta={type:'fs',id,name:file.name,size:file.size,mime:file.type,n,voice:!!voice};
+  const safeName=String(file.name||'file').replace(/[\/\\\u0000-\u001f\u007f]/g,'_').slice(0,200)||'file';
+  const mime=/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(file.type||'')?file.type:'application/octet-stream';
+  const meta={type:'fs',id,name:safeName,size:file.size,mime,n,voice:!!voice};outx[id]=0;
   const ui=addXfer(true,meta,Date.now(),{id,t:'f',file:meta,me:1},()=>{outx[id]=1;send(cid,{type:'fx',id})});
-  send(cid,meta);
   try{
+    await sendSecure(cid,meta);
     for(let i=0;i<n;i++){
-      if(outx[id])throw 'c';
-      const c=conns[cid];if(!c||!c.open)throw 0;
-      while(c.dataChannel&&c.dataChannel.bufferedAmount>1e6)await sleep(25);
+      if(outx[id])throw new Error('cancelled');
+      if(!online(cid))throw new Error('connection lost');
       const d=await file.slice(i*CH,(i+1)*CH).arrayBuffer();
-      c.send({type:'fc',id,i,d});
+      await sendSecure(cid,{type:'fc',id,i,d:toB64(new Uint8Array(d))});
       if(i%4===0||i===n-1)ui.set((i+1)/n);
     }
-    send(cid,{type:'fe',id});ui.done(file);
+    await sendSecure(cid,{type:'fe',id});ui.done(file);
   }catch(e){
-    ui.fail(e==='c'?'Cancelled':'Failed — connection lost',()=>{if(rows[id])rows[id].r.remove();sendFile(file,voice)});
-    return;
+    ui.fail(e.message==='cancelled'?'Cancelled':'Failed — connection lost',()=>{if(rows[id])rows[id].r.remove();sendFile(file,voice)});
+    delete outx[id];return;
   }
+  delete outx[id];
   try{await bPut(id,file)}catch(e){toast('Sent, but could not save a copy')}
-  pushMsg(cid,{id,me:1,t:'f',file:{name:file.name,size:file.size,mime:file.type,voice:!!voice},ts:Date.now()},{noUI:true});
+  pushMsg(cid,{id,me:1,t:'f',file:{name:safeName,size:file.size,mime,voice:!!voice},ts:Date.now()},{noUI:true});
 }
 
 /* ----- voice message (hold mic) ----- */
@@ -810,59 +1021,73 @@ function sendSeen(){
 
 /* ================= INCOMING DATA ================= */
 function onData(pid,p){
-  if(!p||!p.type)return;
+  if(!isObject(p)||typeof p.type!=='string'||p.type.length>12)return;
   const c=getC(pid);
-  if(!c){ // not a friend yet: only a hello is considered, and it needs approval
-    if(p.type==='hi'&&!isBlk(pid))addReq(pid,p.name,validAv(p.av));
+  if(!c){
+    if(p.type==='hi'&&!isBlk(pid)){const conn=conns[pid];addReq(pid,p.name,validAv(p.av),conn&&conn._remoteIdentity)}
     return;
   }
+  if(c.st!=='ok'&&!['hi','acc','dec'].includes(p.type))return;
   switch(p.type){
     case'hi':{
       let ch=0;
-      if(c.auto&&p.name){c.name=String(p.name).slice(0,30);c.auto=0;ch=1}
-      const ab=String(p.ab||'').slice(0,80);if(ab!==(c.ab||'')){c.ab=ab;ch=1}
+      const name=typeof p.name==='string'?p.name.replace(/[\u0000-\u001f\u007f]/g,'').slice(0,30):'';
+      if(c.auto&&name){c.name=name;c.auto=0;ch=1}
+      const ab=typeof p.ab==='string'?p.ab.replace(/[\u0000-\u001f\u007f]/g,'').slice(0,80):'';
+      if(ab!==(c.ab||'')){c.ab=ab;ch=1}
       const av=validAv(p.av);if(av!==(c.av||'')){c.av=av;ch=1}
       if(ch){saveC();presence()}break}
     case'acc':if(c.st!=='ok'){c.st='ok';saveC();toast(c.name+' accepted you ✓');flush(pid);presence()}break;
     case'dec':toast(c.name+' declined your request');removeContact(pid);break;
     case'm':{
+      if(typeof p.id!=='string'||!/^([a-f0-9]{32}|[a-z0-9_-]{6,40})$/i.test(p.id)||typeof p.text!=='string'||p.text.length>5000)break;
       send(pid,{type:'ack',id:p.id});
       if(msgsOf(pid).some(x=>x.id===p.id))break;
-      const m={id:String(p.id),me:0,t:'t',text:String(p.text||'').slice(0,5000),ts:Date.now()};
-      if(p.rp&&p.rp.id)m.rp={id:String(p.rp.id),text:String(p.rp.text||'').slice(0,80),me:p.rp.me?1:0};
+      const m={id:p.id,me:0,t:'t',text:p.text,ts:Date.now()};
+      if(isObject(p.rp)&&typeof p.rp.id==='string'&&p.rp.id.length<=80)m.rp={id:p.rp.id,text:typeof p.rp.text==='string'?p.rp.text.slice(0,80):'',me:p.rp.me?1:0};
       pushMsg(pid,m);if(cur===pid)sendSeen();break}
     case'ack':{
+      if(typeof p.id!=='string'||p.id.length>80)break;
       const a=msgsOf(pid),m=a.find(x=>x.id===p.id);
       if(m&&m.st==='w'){m.st='k';saveM(pid,a);if(els[p.id])tick(els[p.id],'k')}break}
     case'seen':{
-      if(!cfg.seen||!Array.isArray(p.ids))break;
-      const a=msgsOf(pid);p.ids.forEach(id=>{const m=a.find(x=>x.id===id);if(m&&m.me){m.st='s';if(els[id])tick(els[id],'s')}});saveM(pid,a);break}
+      if(!cfg.seen||!Array.isArray(p.ids)||p.ids.length>200)break;
+      const a=msgsOf(pid);p.ids.forEach(id=>{if(typeof id!=='string'||id.length>80)return;const m=a.find(x=>x.id===id);if(m&&m.me){m.st='s';if(els[id])tick(els[id],'s')}});saveM(pid,a);break}
     case'ty':if(cfg.typ&&cur===pid){tyUntil=Date.now()+4000;setHead();setTimeout(setHead,4100)}break;
     case'rx':{
+      if(typeof p.id!=='string'||p.id.length>80)break;
       const a=msgsOf(pid),m=a.find(x=>x.id===p.id);if(!m)break;
-      m.rx=m.rx||{};m.rx.them=String(p.e||'').slice(0,8)||undefined;saveM(pid,a);if(cur===pid)showRx(m);break}
-    case'del':{const m=msgsOf(pid).find(x=>x.id===p.id);if(m&&!m.me)delMsg(p.id,pid);break}
-    case'dm':{const s=+p.s;if(DM.some(x=>x[0]===s))setDm(pid,s,false);break}
+      m.rx=m.rx||{};m.rx.them=typeof p.e==='string'?p.e.slice(0,8)||undefined:undefined;saveM(pid,a);if(cur===pid)showRx(m);break}
+    case'del':{if(typeof p.id!=='string'||p.id.length>80)break;const m=msgsOf(pid).find(x=>x.id===p.id);if(m&&!m.me)delMsg(p.id,pid);break}
+    case'dm':{const s=p.s;if(!Number.isSafeInteger(s)||!DM.some(x=>x[0]===s))break;setDm(pid,s,false);break}
     case'fs':{
-      if(!(p.size<=MAX)||!(p.n>0))break;
-      const live=cur===pid,f={name:String(p.name).slice(0,200),size:p.size,mime:String(p.mime||''),voice:!!p.voice};
-      xf[p.id]={m:p,f,cid:pid,parts:[],got:0,live,ui:live?addXfer(false,f,Date.now(),{id:String(p.id),t:'f',file:f,me:0}):{set(){},done(){},fail(){}}};break}
+      if(typeof p.id!=='string'||!/^([a-f0-9]{32}|[a-z0-9_-]{6,40})$/i.test(p.id)||!Number.isSafeInteger(p.size)||p.size<0||p.size>MAX||!Number.isSafeInteger(p.n)||p.n!==Math.max(1,Math.ceil(p.size/CH))||typeof p.name!=='string'||p.name.length>200||typeof p.mime!=='string'||p.mime.length>100)break;
+      if(xf[p.id]||Object.keys(xf).length>=1){send(pid,{type:'fx',id:p.id});break}
+      const name=p.name.replace(/[\/\\\u0000-\u001f\u007f]/g,'_').slice(0,200)||'file';
+      const mime=/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(p.mime)?p.mime:'application/octet-stream';
+      const live=cur===pid,f={name,size:p.size,mime,voice:p.voice===true};
+      xf[p.id]={m:{n:p.n,size:p.size},f,cid:pid,parts:new Array(p.n),got:0,bytes:0,live,ui:live?addXfer(false,f,Date.now(),{id:p.id,t:'f',file:f,me:0}):{set(){},done(){},fail(){}}};break}
     case'fc':{
-      const x=xf[p.id];if(!x)break;x.parts[p.i]=new Uint8Array(p.d);x.got++;
-      if(x.got%4===0||x.got===x.m.n)x.ui.set(x.got/x.m.n);break}
-    case'fx':{const x=xf[p.id];if(x){delete xf[p.id];x.ui.fail('Cancelled by sender')}break}
+      const x=xf[p.id];if(!x||x.cid!==pid||!Number.isSafeInteger(p.i)||p.i<0||p.i>=x.m.n||typeof p.d!=='string'||p.d.length>22000||x.parts[p.i])break;
+      try{
+        const chunk=fromB64(p.d),expected=p.i===x.m.n-1?x.m.size-p.i*CH:CH;
+        if(chunk.byteLength!==expected||x.bytes+chunk.byteLength>x.m.size)throw new Error('Invalid chunk size');
+        x.parts[p.i]=chunk;x.got++;x.bytes+=chunk.byteLength;
+        if(x.got%4===0||x.got===x.m.n)x.ui.set(x.got/x.m.n);
+      }catch(e){delete xf[p.id];x.ui.fail('Invalid file data');send(pid,{type:'fx',id:p.id})}break}
+    case'fx':{if(typeof p.id==='string'&&Object.prototype.hasOwnProperty.call(outx,p.id))outx[p.id]=1;const x=xf[p.id];if(x&&x.cid===pid){delete xf[p.id];x.ui.fail('Cancelled by sender')}break}
     case'fe':{
-      const x=xf[p.id];if(!x)break;delete xf[p.id];
-      if(x.got<x.m.n){x.ui.fail('Incomplete');break}
+      const x=xf[p.id];if(!x||x.cid!==pid)break;delete xf[p.id];
+      if(x.got!==x.m.n||x.bytes!==x.m.size||x.parts.some(v=>!(v instanceof Uint8Array))){x.ui.fail('Incomplete or invalid file');break}
       const blob=new Blob(x.parts,{type:x.f.mime||'application/octet-stream'});
+      if(blob.size!==x.m.size){x.ui.fail('Invalid file size');break}
       if(x.live)x.ui.done(blob);
-      bPut(p.id,blob).catch(()=>toast('Could not save the file')).then(()=>pushMsg(pid,{id:String(p.id),me:0,t:'f',file:x.f,ts:Date.now()},{noUI:x.live}));
-      break}
+      bPut(p.id,blob).catch(()=>toast('Could not save the file')).then(()=>pushMsg(pid,{id:p.id,me:0,t:'f',file:x.f,ts:Date.now()},{noUI:x.live}));break}
     case'nuke':wipe(pid).then(()=>{document.body.classList.add('flash');setTimeout(()=>location.reload(),350)});break;
     case'ring':
-      if(call||ringing||local){send(pid,{type:'rej'});break}
-      isV=!!p.v;ringing='in';callWith=pid;cinfo={cid:pid,dir:'in',v:isV,ts:Date.now(),conn:0};
-      ov((isV?'Video':'Voice')+' call from '+c.name,'Incoming…',true);break;
+      if(p.v!==true&&p.v!==false)break;
+      if(call||local||ringing||(inCall&&inCall.peer!==pid)){send(pid,{type:'rej'});break}
+      isV=p.v;ringing='in';callWith=pid;cinfo={cid:pid,dir:'in',v:isV,ts:Date.now(),conn:0};ov((isV?'Video':'Voice')+' call from '+c.name,'Incoming…',true);break;
     case'rej':if(callWith===pid){logCall('declined');endCall(false);toast('Call declined')}break;
     case'end':if(callWith===pid){endCall(false);toast('Call ended')}break;
   }
@@ -870,7 +1095,9 @@ function onData(pid,p){
 
 /* ================= CONNECTIONS ================= */
 function register(c,out){
-  const pid=c.peer;c._init=out?me.id:pid;
+  const pid=c.peer;if(!peerIdValid(pid)||pid===me.id){try{c.close()}catch(e){}return}
+  if(!out){const now=Date.now();inboundStarts=inboundStarts.filter(t=>now-t<60000);if(inboundStarts.length>=24){try{c.close()}catch(e){}return}inboundStarts.push(now)}
+  c._init=out?me.id:pid;
   c.on('open',()=>{
     delete connecting[pid];
     if(isBlk(pid)){try{c.close()}catch(e){}return}
@@ -880,11 +1107,19 @@ function register(c,out){
       else{try{c.close()}catch(e){}return}
     }
     conns[pid]=c;
-    const k=getC(pid);
-    if(k){c.send(hiMsg());if(k.st==='ok')c.send({type:'acc'});afterOpen(pid)}
+    beginSecure(c);
   });
-  c.on('data',d=>onData(pid,d));
-  c.on('close',()=>{delete connecting[pid];if(conns[pid]===c){delete conns[pid];onOffline(pid)}});
+  c.on('data',d=>{
+    const st=secureState(c);
+    st.receiveChain=st.receiveChain.then(()=>receivePeerData(c,d)).catch(()=>{
+      failSecure(c,'Secure connection failed. Reconnect and try again.');
+    });
+  });
+  c.on('close',()=>{
+    delete connecting[pid];
+    const st=c._secure;if(st){st.closed=true;clearTimeout(st.timer);(st.queue||[]).splice(0).forEach(x=>x.reject(new Error('Connection closed')))}
+    if(conns[pid]===c){delete conns[pid];onOffline(pid)}
+  });
   c.on('error',()=>{});
 }
 function afterOpen(pid){
@@ -898,6 +1133,7 @@ function afterOpen(pid){
   presence();
 }
 function onOffline(pid){
+  if(inCall&&inCall.peer===pid){try{inCall.close()}catch(e){}inCall=null;wantAns=false}
   for(const k in xf)if(xf[k].cid===pid){xf[k].ui.fail('Connection lost');delete xf[k]}
   if(callWith===pid&&(call||ringing||local)){endCall(false);toast('Call disconnected')}
   presence();
@@ -910,10 +1146,11 @@ function tryConnect(c){
   setTimeout(()=>{if(!k.open){delete connecting[c.id];try{k.close()}catch(e){}}},12000);
 }
 function initPeer(){
-  peer=new Peer(me.id,{config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}]}});
+  if(!localIdentity){toast('Secure identity is not ready. Reopen KRYPT.');return}
+  peer=new Peer(me.id,{host:'0.peerjs.com',port:443,path:'/',secure:true,config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}]}});
   peer.on('open',()=>{netOk=true;setNet();contacts.forEach(tryConnect)});
   peer.on('connection',c=>register(c,false));
-  peer.on('call',c=>{if(!getC(c.peer)){c.close();return}inCall=c;if(wantAns)answer()});
+  peer.on('call',c=>{const contact=getC(c.peer);if(!contact||contact.st!=='ok'||!online(c.peer)||call||local||(ringing&&!(ringing==='in'&&callWith===c.peer))||(inCall&&inCall!==c)){c.close();return}inCall=c;const pending=c;setTimeout(()=>{if(inCall===pending&&!(ringing==='in'&&callWith===c.peer)){try{pending.close()}catch(e){}inCall=null}},15000);if(wantAns&&ringing==='in'&&callWith===c.peer)answer()});
   peer.on('disconnected',()=>{netOk=false;setNet();try{peer.reconnect()}catch(e){}});
   peer.on('close',restart);
   peer.on('error',e=>{
@@ -934,9 +1171,9 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 /* ================= FRIEND REQUESTS ================= */
-function addReq(id,name,av){
-  if(reqs.some(r=>r.id===id))return;
-  const r={id,name:String(name||'Someone').slice(0,30),av:av||''};reqs.push(r);saveR();renderReqs();
+function addReq(id,name,av,ik){
+  if(reqs.some(r=>r.id===id)||reqs.length>=100||!validPubJwk(ik))return;
+  const r={id,name:String(name||'Someone').replace(/[\u0000-\u001f\u007f]/g,'').slice(0,30),av:av||'',ik:cleanPubJwk(ik)};reqs.push(r);saveR();renderReqs();
   if($('home').classList.contains('hide'))banner('🙋 '+r.name+' wants to chat — tap to view');
 }
 function renderReqs(){
@@ -951,11 +1188,11 @@ function renderReqs(){
     box.appendChild(d);
   });
 }
-const newContact=(id,name,auto,st,av)=>({id,name,auto,st,av:av||'',nk:0,last:Date.now(),un:0,pv:'',dm:cfg.dm,dmp:cfg.dm?1:0});
+const newContact=(id,name,auto,st,av,ik)=>({id,name,auto,st,av:av||'',ik:validPubJwk(ik)?cleanPubJwk(ik):null,nk:0,last:Date.now(),un:0,pv:'',dm:cfg.dm,dmp:cfg.dm?1:0});
 function acceptReq(id){
   const r=reqs.find(x=>x.id===id);if(!r)return;
   reqs=reqs.filter(x=>x.id!==id);saveR();
-  if(!getC(id)){contacts.push(newContact(id,r.name,0,'ok',r.av));saveC()}
+  if(!getC(id)){contacts.push(newContact(id,r.name,0,'ok',r.av,r.ik));saveC()}
   if(online(id)){send(id,hiMsg());send(id,{type:'acc'});afterOpen(id)}else tryConnect(getC(id));
   toast(r.name+' added ✓');renderHome();
 }
@@ -987,7 +1224,7 @@ $('addGo').onclick=()=>{
   if(code===me.id)return aErr("That's your own code — paste your friend's code instead.");
   if(isBlk(code))return aErr('You blocked this person. Unblock them in Settings first.');
   if(getC(code)){openChat(code,true);return}
-  const n=$('aName').value.trim(),c=newContact(code,(n||'Friend').slice(0,30),n?0:1,'wait');
+  const n=$('aName').value.trim(),existingConn=conns[code],c=newContact(code,(n||'Friend').slice(0,30),n?0:1,'wait', '',existingConn&&existingConn._remoteIdentity);
   contacts.push(c);saveC();manualAt=Date.now();tryConnect(c);
   openChat(code,true);toast("Added! Messages will send when they're online.");
 };
@@ -1025,7 +1262,7 @@ function openFiles(){
       const b=await bGet(m.id).catch(()=>null);if(!b)return toast('File no longer available');
       const x=document.createElement('a');x.href=URL.createObjectURL(b);x.download=m.file.name;x.click();
     };
-    if((m.file.mime||'').startsWith('image/'))bGet(m.id).then(b=>{if(b){const i=document.createElement('img');i.src=URL.createObjectURL(b);d.querySelector('.th').replaceWith(i)}}).catch(()=>{});
+    if(/^image\/(png|jpeg|gif|webp|avif)$/i.test(m.file.mime||''))bGet(m.id).then(b=>{if(b){const i=document.createElement('img');i.src=URL.createObjectURL(b);d.querySelector('.th').replaceWith(i)}}).catch(()=>{});
     l.appendChild(d);
   });
   show('files');pushNav(()=>show('chat'));
@@ -1037,10 +1274,12 @@ const media=v=>navigator.mediaDevices.getUserMedia(v?{audio:true,video:{facingMo
 async function startCall(v){
   if(!online(cur))return toast('Your friend is offline right now');
   if(call||local||ringing)return;
+  const target=cur;
   try{local=await media(v)}catch(e){return toast('Please allow '+(v?'camera & microphone':'microphone')+' access')}
-  isV=v;ringing='out';callWith=cur;cinfo={cid:cur,dir:'out',v,ts:Date.now(),conn:0};send(cur,{type:'ring',v});
-  ov(v?'Video calling…':'Calling…','Waiting for '+getC(cur).name+' to answer',false);
-  hook(peer.call(cur,local));
+  isV=v;ringing='out';callWith=target;cinfo={cid:target,dir:'out',v,ts:Date.now(),conn:0};
+  try{await sendSecure(target,{type:'ring',v:!!v})}catch(e){endCall(false);return toast('Secure connection lost')}
+  ov(v?'Video calling…':'Calling…','Waiting for '+getC(target).name+' to answer',false);
+  hook(peer.call(target,local));
 }
 function hook(c){
   call=c;
@@ -1056,9 +1295,10 @@ function openCs(){
   sec=0;$('ct').textContent='00:00';clearInterval(ctm);ctm=setInterval(()=>$('ct').textContent=fmtT(++sec),1000);
 }
 async function answer(){
-  wantAns=false;
+  if(!inCall){wantAns=true;setTimeout(()=>{if(wantAns&&ringing==='in'){wantAns=false;toast('Call connection timed out');endCall(false)}},15000);return}
+  wantAns=false;const incoming=inCall;
   try{local=await media(isV)}catch(e){toast('Please allow microphone/camera access');$('dec').onclick();return}
-  inCall.answer(local);hook(inCall);inCall=null;
+  incoming.answer(local);hook(incoming);inCall=null;
 }
 function logCall(label){
   if(!cinfo)return;const i=cinfo;cinfo=null;
@@ -1138,7 +1378,7 @@ function openSettings(){
 }
 $('setBtn').onclick=openSettings;
 $('sSave').onclick=()=>{
-  const n=$('sName').value.trim();if(!n)return toast('Name can\'t be empty');
+  const n=$('sName').value.trim().replace(/[\u0000-\u001f\u007f]/g,'');if(!n)return toast('Name can\'t be empty');
   me.name=n.slice(0,30);LS.set('k_me',me);cfg.ab=$('sAbout').value.trim().slice(0,80);saveS();sendHiAll();toast('Profile saved ✓');
 };
 $('pav').onclick=()=>$('pfi').click();
@@ -1161,14 +1401,14 @@ $('sWipe').onclick=()=>{if(confirm('Erase ALL KRYPT data on this phone? Chats, f
 $('sPin').onclick=async()=>{
   const old=await askPin('Enter current PIN','',{cancel:1});if(old==null)return;
   showLock('Checking…','',{busy:1});
-  if(!(await tryPin(old))){hideLock();return toast('Wrong PIN')}
+  const oldKey=await tryPin(old);if(!oldKey){hideLock();return toast('Wrong PIN')}
   let a;for(;;){
     a=await askPin('New PIN','Choose 6 new digits',{cancel:1});if(a==null)return;
     if(weak(a)){toast('Too easy to guess. Try another.');continue}break;
   }
   const b=await askPin('Confirm new PIN','Enter it again',{cancel:1});if(b==null)return;
   if(a!==b){hideLock();return toast("PINs didn't match")}
-  showLock('Securing…','',{busy:1});await wrapSave(a);hideLock();toast('PIN changed ✓');
+  showLock('Securing…','',{busy:1});await wrapSave(a,oldKey);hideLock();toast('PIN changed ✓');
 };
 
 /* ================= ONBOARDING + BOOT ================= */
@@ -1178,7 +1418,7 @@ function startApp(){
   if(m){const code=normCode(m[1]);history.replaceState(null,'',location.pathname);if(code!==me.id)openAdd(code)}
 }
 $('wGo').onclick=()=>{
-  const n=$('wName').value.trim();if(!n)return toast('Please enter your name');
+  const n=$('wName').value.trim().replace(/[\u0000-\u001f\u007f]/g,'');if(!n)return toast('Please enter your name');
   me={id:newId(),name:n.slice(0,30)};LS.set('k_me',me);saveS();initPeer();show('info');
 };
 $('wName').onkeydown=e=>{if(e.key==='Enter')$('wGo').click()};
@@ -1192,6 +1432,7 @@ if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catc
   try{
     if(!localStorage.getItem('k_vault'))await setupPin();else await unlockApp();
     await loadAll();
+    await ensureIdentity();
   }catch(e){showLock('Something went wrong','Please close and reopen KRYPT.',{busy:1});return}
   me=LS.get('k_me',null);contacts=LS.get('k_c',[]);reqs=LS.get('k_r',[]);calls=LS.get('k_calls',[]);
   cfg=Object.assign(cfg,LS.get('k_set',{}));if(!Array.isArray(cfg.blk))cfg.blk=[];
